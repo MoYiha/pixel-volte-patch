@@ -9,6 +9,8 @@ import android.os.Build
 import android.os.Build.VERSION_CODES
 import android.os.Bundle
 import android.os.IInterface
+import android.os.PersistableBundle
+import android.os.ServiceManager
 import android.telephony.CarrierConfigManager
 import android.telephony.SubscriptionInfo
 import android.telephony.TelephonyFrameworkInitializer
@@ -46,10 +48,14 @@ open class Moder {
         get() =
             ICarrierConfigLoader.Stub.asInterface(
                 ShizukuBinderWrapper(
-                    TelephonyFrameworkInitializer
-                        .getTelephonyServiceManager()
-                        .carrierConfigServiceRegisterer
-                        .get()!!,
+                    try {
+                        TelephonyFrameworkInitializer
+                            .getTelephonyServiceManager()
+                            .carrierConfigServiceRegisterer
+                            .get()
+                    } catch (e: NoClassDefFoundError) {
+                        ServiceManager.getService(Context.CARRIER_CONFIG_SERVICE)
+                    }!!,
                 ),
             )
 
@@ -57,10 +63,14 @@ open class Moder {
         get() =
             ITelephony.Stub.asInterface(
                 ShizukuBinderWrapper(
-                    TelephonyFrameworkInitializer
-                        .getTelephonyServiceManager()
-                        .telephonyServiceRegisterer
-                        .get()!!,
+                    try {
+                        TelephonyFrameworkInitializer
+                            .getTelephonyServiceManager()
+                            .telephonyServiceRegisterer
+                            .get()
+                    } catch (e: NoClassDefFoundError) {
+                        ServiceManager.getService(Context.TELEPHONY_SERVICE)
+                    }!!,
                 ),
             )
 
@@ -68,10 +78,14 @@ open class Moder {
         get() =
             IPhoneSubInfo.Stub.asInterface(
                 ShizukuBinderWrapper(
-                    TelephonyFrameworkInitializer
-                        .getTelephonyServiceManager()
-                        .phoneSubServiceRegisterer
-                        .get()!!,
+                    try {
+                        TelephonyFrameworkInitializer
+                            .getTelephonyServiceManager()
+                            .phoneSubServiceRegisterer
+                            .get()
+                    } catch (e: NoClassDefFoundError) {
+                        ServiceManager.getService("iphonesubinfo")
+                    }!!,
                 ),
             )
 
@@ -79,10 +93,14 @@ open class Moder {
         get() =
             ISub.Stub.asInterface(
                 ShizukuBinderWrapper(
-                    TelephonyFrameworkInitializer
-                        .getTelephonyServiceManager()
-                        .subscriptionServiceRegisterer
-                        .get()!!,
+                    try {
+                        TelephonyFrameworkInitializer
+                            .getTelephonyServiceManager()
+                            .subscriptionServiceRegisterer
+                            .get()
+                    } catch (e: NoClassDefFoundError) {
+                        ServiceManager.getService("isub")
+                    }!!,
                 ),
             )
 }
@@ -92,24 +110,41 @@ class CarrierModer(
 ) : Moder() {
     fun getActiveSubscriptionInfoForSimSlotIndex(index: Int): SubscriptionInfo? {
         val sub = this.loadCachedInterface { sub }
-        return sub.getActiveSubscriptionInfoForSimSlotIndex(index, null, null)
+        return try {
+            sub.getActiveSubscriptionInfoForSimSlotIndex(index, null, null)
+        } catch (e: NoSuchMethodError) {
+            val getActiveSubscriptionInfoForSimSlotIndexMethod =
+                sub.javaClass.getMethod(
+                    "getActiveSubscriptionInfoForSimSlotIndex",
+                    Int::class.javaPrimitiveType,
+                    String::class.java,
+                )
+            (getActiveSubscriptionInfoForSimSlotIndexMethod.invoke(sub, index, null) as? SubscriptionInfo)
+        }
     }
 
     val subscriptions: List<SubscriptionInfo>
         get() {
             val sub = this.loadCachedInterface { sub }
-            return try {
-                sub.getActiveSubscriptionInfoList(null, null, true)
+            try {
+                return sub.getActiveSubscriptionInfoList(null, null, true) ?: emptyList()
             } catch (e: NoSuchMethodError) {
-                // FIXME: lift up reflect as soon as official source code releases
+            }
+            return try {
                 val getActiveSubscriptionInfoListMethod =
                     sub.javaClass.getMethod(
                         "getActiveSubscriptionInfoList",
                         String::class.java,
                         String::class.java,
-                        Boolean::class.java,
                     )
-                (getActiveSubscriptionInfoListMethod.invoke(sub, null, null, false) as List<SubscriptionInfo>)
+                (getActiveSubscriptionInfoListMethod.invoke(sub, null, null) as? List<SubscriptionInfo>) ?: emptyList()
+            } catch (e: NoSuchMethodException) {
+                val getActiveSubscriptionInfoListMethod =
+                    sub.javaClass.getMethod(
+                        "getActiveSubscriptionInfoList",
+                        String::class.java,
+                    )
+                (getActiveSubscriptionInfoListMethod.invoke(sub, null) as? List<SubscriptionInfo>) ?: emptyList()
             }
         }
 
@@ -276,8 +311,8 @@ class SubscriptionModer(
         }
         val iCclInstance = this.loadCachedInterface { carrierConfigLoader }
 
-        val config = iCclInstance.getConfigForSubIdWithFeature(subscriptionId, iCclInstance.defaultCarrierServicePackageName, "")
-        return config.getString(key)
+        val config = this.getConfigForSubId(iCclInstance, subscriptionId)
+        return config?.getString(key)
     }
 
     fun getBooleanValue(key: String): Boolean {
@@ -288,8 +323,8 @@ class SubscriptionModer(
         }
         val iCclInstance = this.loadCachedInterface { carrierConfigLoader }
 
-        val config = iCclInstance.getConfigForSubIdWithFeature(subscriptionId, iCclInstance.defaultCarrierServicePackageName, "")
-        return config.getBoolean(key)
+        val config = this.getConfigForSubId(iCclInstance, subscriptionId)
+        return config?.getBoolean(key) ?: false
     }
 
     fun getIntValue(key: String): Int {
@@ -300,8 +335,8 @@ class SubscriptionModer(
         }
         val iCclInstance = this.loadCachedInterface { carrierConfigLoader }
 
-        val config = iCclInstance.getConfigForSubIdWithFeature(subscriptionId, iCclInstance.defaultCarrierServicePackageName, "")
-        return config.getInt(key)
+        val config = this.getConfigForSubId(iCclInstance, subscriptionId)
+        return config?.getInt(key) ?: -1
     }
 
     fun getLongValue(key: String): Long {
@@ -312,8 +347,8 @@ class SubscriptionModer(
         }
         val iCclInstance = this.loadCachedInterface { carrierConfigLoader }
 
-        val config = iCclInstance.getConfigForSubIdWithFeature(subscriptionId, iCclInstance.defaultCarrierServicePackageName, "")
-        return config.getLong(key)
+        val config = this.getConfigForSubId(iCclInstance, subscriptionId)
+        return config?.getLong(key) ?: -1L
     }
 
     fun getBooleanArrayValue(key: String): BooleanArray {
@@ -324,8 +359,8 @@ class SubscriptionModer(
         }
         val iCclInstance = this.loadCachedInterface { carrierConfigLoader }
 
-        val config = iCclInstance.getConfigForSubIdWithFeature(subscriptionId, iCclInstance.defaultCarrierServicePackageName, "")
-        return config.getBooleanArray(key) ?: BooleanArray(0)
+        val config = this.getConfigForSubId(iCclInstance, subscriptionId)
+        return config?.getBooleanArray(key) ?: BooleanArray(0)
     }
 
     fun getIntArrayValue(key: String): IntArray {
@@ -336,8 +371,8 @@ class SubscriptionModer(
         }
         val iCclInstance = this.loadCachedInterface { carrierConfigLoader }
 
-        val config = iCclInstance.getConfigForSubIdWithFeature(subscriptionId, iCclInstance.defaultCarrierServicePackageName, "")
-        return config.getIntArray(key) ?: IntArray(0)
+        val config = this.getConfigForSubId(iCclInstance, subscriptionId)
+        return config?.getIntArray(key) ?: IntArray(0)
     }
 
     fun getStringArrayValue(key: String): Array<String> {
@@ -348,8 +383,8 @@ class SubscriptionModer(
         }
         val iCclInstance = this.loadCachedInterface { carrierConfigLoader }
 
-        val config = iCclInstance.getConfigForSubIdWithFeature(subscriptionId, iCclInstance.defaultCarrierServicePackageName, "")
-        return config.getStringArray(key) ?: emptyArray()
+        val config = this.getConfigForSubId(iCclInstance, subscriptionId)
+        return config?.getStringArray(key) ?: emptyArray()
     }
 
     fun getValue(key: String): Any? {
@@ -360,8 +395,28 @@ class SubscriptionModer(
         }
         val iCclInstance = this.loadCachedInterface { carrierConfigLoader }
 
-        val config = iCclInstance.getConfigForSubIdWithFeature(subscriptionId, iCclInstance.defaultCarrierServicePackageName, "")
-        return config.get(key)
+        val config = this.getConfigForSubId(iCclInstance, subscriptionId)
+        return config?.get(key)
+    }
+
+    fun getConfigForSubId(
+        iCclInstance: ICarrierConfigLoader,
+        subscriptionId: Int,
+    ): PersistableBundle? {
+        try {
+            return iCclInstance.getConfigForSubIdWithFeature(subscriptionId, iCclInstance.defaultCarrierServicePackageName, "")
+        } catch (e: NoSuchMethodError) {
+        }
+        return try {
+            iCclInstance.getConfigForSubId(subscriptionId, iCclInstance.defaultCarrierServicePackageName)
+        } catch (e: NoSuchMethodError) {
+            val getConfigForSubIdMethod =
+                iCclInstance.javaClass.getMethod(
+                    "getConfigForSubId",
+                    Int::class.javaPrimitiveType,
+                )
+            (getConfigForSubIdMethod.invoke(iCclInstance, subscriptionId) as? PersistableBundle)
+        }
     }
 
     val simSlotIndex: Int
@@ -410,7 +465,7 @@ class SubscriptionModer(
     val wfcSpnFormatIndex: Int
         get() = this.getIntValue(CarrierConfigManager.KEY_WFC_SPN_FORMAT_IDX_INT)
 
-    val carrierName: String
+    val carrierName: String?
         get() = this.loadCachedInterface { telephony }.getSubscriptionCarrierName(this.subscriptionId)
 
     val showVoWifiIcon: Boolean
